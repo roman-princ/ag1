@@ -120,7 +120,7 @@ namespace student_namespace {
     }
     HeroStats stats;
     std::vector<Action> actions;
-    void replaceItem(const Item &newItem) {
+    void replaceItem(const Item &newItem, ItemId itemIndex) {
       if (newItem.type == Item::Armor) {
         if (armor.has_value()) {
           stats.hp -= armor->hp;
@@ -158,7 +158,7 @@ namespace student_namespace {
       stats.def += newItem.def;
       stats.stacking_off += newItem.stacking_off;
       stats.stacking_def += newItem.stacking_def;
-      actions.emplace_back(Pickup{newItem.type});
+      actions.emplace_back(Pickup{itemIndex});
     }
   };
   struct StateHash {
@@ -193,8 +193,16 @@ namespace student_namespace {
 
     while(!q.empty()) {
       auto current = q.front(); q.pop();
+      
+      // Pick up treasure if we're in the treasure room and don't have it yet
+      if (current.room == treasure && !current.hasTreasure) {
+        current.hasTreasure = true;
+      }
+      
       const Room& room = rooms[current.room];
-      bool hasStealth = current.armor->stealth || current.weapon->stealth || current.duck->stealth;
+      bool hasStealth = (current.armor && current.armor->stealth) ||
+                        (current.weapon && current.weapon->stealth) ||
+                        (current.duck && current.duck->stealth);
 
       std::vector<State> toBeAdded;
       std::vector<State> toBeTestedInCombat;
@@ -203,17 +211,18 @@ namespace student_namespace {
       else
         toBeAdded.push_back(current);
       visited.insert(current);
-      if (current.hasTreasure && std::ranges::find(entrances, current.room) != entrances.end() && (!room.monster.has_value() || hasStealth)) {
+      if (current.hasTreasure && std::ranges::find(entrances, current.room) != entrances.end() && !room.monster.has_value()) {
         return current.actions;
       }
 
 
       // zkusime sbirat itemy
-      for (const Item &item: room.items) {
-        // nemuzeme sebrat itemy ve stealth modu
+      for (size_t itemIdx = 0; itemIdx < room.items.size(); itemIdx++) {
+        const Item &item = room.items[itemIdx];
+        // nemuzeme sebrat itemy ve stealth modu, ani poklad pokud je tam monster
         if(hasStealth && room.monster.has_value()) continue;
         auto next = current;
-        next.replaceItem(item);
+        next.replaceItem(item, itemIdx);
         if(!visited.contains(next)) {
           if(room.monster.has_value())
             toBeTestedInCombat.push_back(next);
@@ -224,9 +233,14 @@ namespace student_namespace {
 
 
       for(State &s : toBeTestedInCombat) {
-        bool hasStealthCurr = s.armor->stealth || s.weapon->stealth || s.duck->stealth;
-        bool hasFirstAttackCurr = s.armor->first_attack || s.weapon->first_attack || s.duck->first_attack;
-        if(hasStealthCurr)
+        bool hasStealthCurr = (s.armor && s.armor->stealth) ||
+                              (s.weapon && s.weapon->stealth) ||
+                              (s.duck && s.duck->stealth);
+        bool hasFirstAttackCurr = (s.armor && s.armor->first_attack) ||
+                                  (s.weapon && s.weapon->first_attack) ||
+                                  (s.duck && s.duck->first_attack);
+        // can only stealth if NOT picking up treasure in this room
+        if(hasStealthCurr && !s.hasTreasure)
           toBeAdded.push_back(s);
         else {
           Monster heroObj = { .hp = s.stats.hp, .off = s.stats.off, .def = s.stats.def,
@@ -244,7 +258,6 @@ namespace student_namespace {
           auto tba = s;
           tba.room = neighbour;
           tba.actions.emplace_back(Move{ neighbour });
-          if(neighbour == treasure) tba.hasTreasure = true;
           if(!visited.contains(tba))
             q.push(tba);
         }
@@ -695,5 +708,3 @@ int main() {
 }
 
 #endif
-
-
