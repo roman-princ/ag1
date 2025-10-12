@@ -108,62 +108,71 @@ namespace student_namespace {
         stacking_def == o.stacking_def;
     }
   };
+  struct EquippedItem {
+    Item::Type type;
+    int hp, off, def;
+    int stacking_off, stacking_def;
+    bool first_attack, stealth;
+
+    bool operator==(const EquippedItem& o) const {
+      return type == o.type &&
+             hp == o.hp && off == o.off && def == o.def &&
+             stacking_off == o.stacking_off && stacking_def == o.stacking_def &&
+             first_attack == o.first_attack && stealth == o.stealth;
+    }
+
+    static EquippedItem fromItem(const Item& i) {
+      return EquippedItem{
+        .type = i.type,
+        .hp = i.hp,
+        .off = i.off,
+        .def = i.def,
+        .stacking_off = i.stacking_off,
+        .stacking_def = i.stacking_def,
+        .first_attack = i.first_attack,
+        .stealth = i.stealth
+      };
+    }
+  };
   struct State {
     RoomId room;
     bool hasTreasure;
-    std::optional<Item> armor;
-    std::optional<Item> weapon;
-    std::optional<Item> duck;
+    std::vector<EquippedItem> equipped;
     bool usedStealth = false;
     HeroStats stats;
     std::vector<Action> actions;
 
     bool operator==(const State& o) const {
       return room == o.room && hasTreasure == o.hasTreasure &&
-        armor == o.armor && weapon == o.weapon && duck == o.duck && stats == o.stats && usedStealth == o.usedStealth;
+        equipped == o.equipped && stats == o.stats && usedStealth == o.usedStealth;
     }
 
-    void replaceItem(const Item &newItem, ItemId itemIndex) {
+    void replaceItem(const std::vector<Room>& rooms, RoomId currentRoom, ItemId itemIndex) {
+      const Item& newItem = rooms[currentRoom].items[itemIndex];
 
-      std::vector<std::optional<Item>> equipped = {};
       HeroStats initStats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, };
-      // lambda pro aplikaci itemu
-      auto apply = [&](const std::optional<Item>& i) {
-        if (!i.has_value()) return;
-        initStats.hp += i->hp;
-        initStats.off += i->off;
-        initStats.def += i->def;
-        initStats.stacking_off += i->stacking_off;
-        initStats.stacking_def += i->stacking_def;
-      };
 
 
-      switch (newItem.type) {
-        case Item::Armor:
-          if(armor.has_value())
-            actions.emplace_back(Drop{ Item::Armor });
-          armor = newItem;
-          actions.emplace_back(Pickup{ itemIndex });
-          break;
-        case Item::Weapon:
-          if(weapon.has_value())
-            actions.emplace_back(Drop{ Item::Weapon });
-          weapon = newItem;
-          actions.emplace_back(Pickup{ itemIndex });
-          break;
-        case Item::RubberDuck:
-          if(duck.has_value())
-            actions.emplace_back(Drop{ Item::RubberDuck });
-          actions.emplace_back(Pickup{ itemIndex });
-          duck = newItem;
-          break;
-        default:
-          break;
+      auto it = std::ranges::find_if(equipped, [&](const EquippedItem& eq) {
+        return eq.type == newItem.type;
+      });
+
+      if (it != equipped.end()) {
+        actions.emplace_back(Drop{ newItem.type });
+        equipped.erase(it);
       }
 
-      apply(armor);
-      apply(weapon);
-      apply(duck);
+      equipped.push_back(EquippedItem::fromItem(rooms[currentRoom].items[itemIndex]));
+      actions.emplace_back(Pickup{ itemIndex });
+
+      for (const EquippedItem& eq : equipped) {
+        initStats.hp += eq.hp;
+        initStats.off += eq.off;
+        initStats.def += eq.def;
+        initStats.stacking_off += eq.stacking_off;
+        initStats.stacking_def += eq.stacking_def;
+      }
+
       if(initStats.hp < 1) initStats.hp = 1;
       stats = initStats;
     }
@@ -172,15 +181,23 @@ namespace student_namespace {
     std::size_t operator()(const State& s) const {
       std::size_t h1 = std::hash<RoomId>{}(s.room);
       std::size_t h2 = std::hash<bool>{}(s.hasTreasure);
-      std::size_t h3 = s.armor.has_value() ? std::hash<std::string>{}(s.armor->name) : 0;
-      std::size_t h4 = s.weapon.has_value() ? std::hash<std::string>{}(s.weapon->name) : 0;
-      std::size_t h5 = s.duck.has_value() ? std::hash<std::string>{}(s.duck->name) : 0;
+      std::size_t h3 = 0;
+      for (const auto& eq : s.equipped) {
+        h3 ^= (std::hash<int>{}(eq.off) << 1)
+            ^ (std::hash<int>{}(eq.def) << 2)
+            ^ (std::hash<int>{}(eq.hp) << 3)
+            ^ (std::hash<int>{}(eq.stacking_off) << 4)
+            ^ (std::hash<int>{}(eq.stacking_def) << 5)
+            ^ (std::hash<int>{}(eq.type) << 6)
+            ^ (std::hash<bool>{}(eq.first_attack) << 7)
+            ^ (std::hash<bool>{}(eq.stealth) << 8);
+      }
       std::size_t h6 = std::hash<int>{}(s.stats.hp);
       std::size_t h7 = std::hash<int>{}(s.stats.off);
       std::size_t h8 = std::hash<int>{}(s.stats.def);
       std::size_t h9 = std::hash<bool>{}(s.usedStealth);
 
-      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7) ^ (h9 << 8);
+      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7) ^ (h9 << 8);
     }
   };
 
@@ -191,6 +208,7 @@ namespace student_namespace {
   ) {
     std::queue<State> q;
     std::unordered_set<State, StateHash> visited;
+
     for (auto en : entrances) {
       q.push(State{
         .room = en,
@@ -206,12 +224,14 @@ namespace student_namespace {
       const Room& room = rooms[current.room];
 
       if(room.monster.has_value()) {
-        bool hasStealth = (current.armor && current.armor->stealth) ||
-                            (current.weapon && current.weapon->stealth) ||
-                            (current.duck && current.duck->stealth);
-        bool hasFirstAttack = (current.armor && current.armor->first_attack) ||
-                                (current.weapon && current.weapon->first_attack) ||
-                                (current.duck && current.duck->first_attack);
+        bool hasStealth = false;
+        bool hasFirstAttack = false;
+
+        for (const EquippedItem& eq : current.equipped) {
+          if (eq.stealth) hasStealth = true;
+          if (eq.first_attack) hasFirstAttack = true;
+        }
+
         Monster heroObj = { .hp = current.stats.hp, .off = current.stats.off, .def = current.stats.def,
           .stacking_off = current.stats.stacking_off, .stacking_def = current.stats.stacking_def };
         auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
@@ -220,28 +240,30 @@ namespace student_namespace {
           visited.insert(current);
           continue;
         }
-        if(!survived)
+        if(!survived) {
           current.usedStealth = true;
+        }
       }
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
-      if(!current.usedStealth) {
+      if (!current.usedStealth) {
         auto temp = current;
-        for (auto &item : room.items) {
-          temp.replaceItem(item, &item - &room.items[0]);
-          toBeChecked.push_back(temp);
+        for (auto &item: room.items) {
+          temp.replaceItem(rooms, current.room, &item - &room.items[0]);
+          if(!visited.contains(temp)) {
+            toBeChecked.push_back(temp);
+            visited.insert(temp);
+          }
         }
       }
 
       for(auto & s : toBeChecked){
         for (auto &neighbour : room.neighbors) {
           auto tba = s;
-          if(tba.room == treasure && !tba.usedStealth && !tba.hasTreasure) {
+          if(tba.room == treasure && !tba.usedStealth && !tba.hasTreasure)
             tba.hasTreasure = true;
-          }
-          if(tba.hasTreasure && std::ranges::find(entrances, tba.room) != entrances.end()) {
+          if(tba.hasTreasure && std::ranges::find(entrances, tba.room) != entrances.end())
             return tba.actions;
-          }
           tba.usedStealth = false;
           tba.room = neighbour;
           tba.actions.emplace_back(Move{ neighbour });
