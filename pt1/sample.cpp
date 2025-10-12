@@ -231,11 +231,10 @@ namespace student_namespace {
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
       if(!current.usedStealth) {
-        for (auto & item : room.items) {
-          auto next = current;
-          next.replaceItem(item, &item - &room.items[0]);
-          if(!visited.contains(next))
-            toBeChecked.push_back(next);
+        auto temp = current;
+        for (auto &item : room.items) {
+          temp.replaceItem(item, &item - &room.items[0]);
+          toBeChecked.push_back(temp);
         }
       }
 
@@ -277,7 +276,7 @@ void check_solution(
   const std::vector<RoomId>& entrances,
   RoomId treasure,
   size_t expected_rooms,
-  bool print = true
+  bool print = false
 ) {
   // TODO check if hero survives combat
   // TODO check if treasure was collected
