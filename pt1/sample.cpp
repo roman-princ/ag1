@@ -114,44 +114,55 @@ namespace student_namespace {
     std::optional<Item> armor;
     std::optional<Item> weapon;
     std::optional<Item> duck;
+    bool usedStealth = false;
     bool operator==(const State& o) const {
       return room == o.room && hasTreasure == o.hasTreasure &&
-        armor == o.armor && weapon == o.weapon && duck == o.duck && stats == o.stats;
+        armor == o.armor && weapon == o.weapon && duck == o.duck && stats == o.stats && usedStealth == o.usedStealth;
     }
     HeroStats stats;
     std::vector<Action> actions;
+
+    void dropItem(Item::Type type) {
+      std::optional<Item>* itemSlot = nullptr;
+
+      if (type == Item::Armor) {
+        itemSlot = &armor;
+      } else if (type == Item::Weapon) {
+        itemSlot = &weapon;
+      } else if (type == Item::RubberDuck) {
+        itemSlot = &duck;
+      }
+
+      if (itemSlot && itemSlot->has_value()) {
+        stats.hp -= (*itemSlot)->hp;
+        stats.off -= (*itemSlot)->off;
+        stats.def -= (*itemSlot)->def;
+        stats.stacking_off -= (*itemSlot)->stacking_off;
+        stats.stacking_def -= (*itemSlot)->stacking_def;
+        *itemSlot = std::nullopt;
+        actions.emplace_back(Drop{ type });
+      }
+    }
+
     void replaceItem(const Item &newItem, ItemId itemIndex) {
+      // Drop existing item of the same type if present
+      if (newItem.type == Item::Armor && armor.has_value()) {
+        dropItem(Item::Armor);
+      } else if (newItem.type == Item::Weapon && weapon.has_value()) {
+        dropItem(Item::Weapon);
+      } else if (newItem.type == Item::RubberDuck && duck.has_value()) {
+        dropItem(Item::RubberDuck);
+      }
+
+      // Equip the new item
       if (newItem.type == Item::Armor) {
-        if (armor.has_value()) {
-          stats.hp -= armor->hp;
-          stats.off -= armor->off;
-          stats.def -= armor->def;
-          stats.stacking_off -= armor->stacking_off;
-          stats.stacking_def -= armor->stacking_def;
-          actions.emplace_back(Drop{ armor->type });
-        }
         armor = newItem;
       } else if (newItem.type == Item::Weapon) {
-        if (weapon.has_value()) {
-          stats.hp -= weapon->hp;
-          stats.off -= weapon->off;
-          stats.def -= weapon->def;
-          stats.stacking_off -= weapon->stacking_off;
-          stats.stacking_def -= weapon->stacking_def;
-          actions.emplace_back(Drop{ weapon->type });
-        }
         weapon = newItem;
       } else if (newItem.type == Item::RubberDuck) {
-        if (duck.has_value()) {
-          stats.hp -= duck->hp;
-          stats.off -= duck->off;
-          stats.def -= duck->def;
-          stats.stacking_off -= duck->stacking_off;
-          stats.stacking_def -= duck->stacking_def;
-          actions.emplace_back(Drop{ duck->type });
-        }
         duck = newItem;
       }
+
       stats.hp += newItem.hp;
       if(stats.hp < 1) stats.hp = 1;
       stats.off += newItem.off;
@@ -171,7 +182,8 @@ namespace student_namespace {
       std::size_t h6 = std::hash<int>{}(s.stats.hp);
       std::size_t h7 = std::hash<int>{}(s.stats.off);
       std::size_t h8 = std::hash<int>{}(s.stats.def);
-      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7);
+      std::size_t h9 = std::hash<bool>{}(s.usedStealth);
+      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7) ^ (h9 << 8);
     }
   };
 
@@ -187,79 +199,62 @@ namespace student_namespace {
         .room = en,
         .hasTreasure = (en == treasure),
         .stats = HeroStats{ .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, },
-        .actions = { Move{ en } }
+        .actions = { Move{ en } },
+        .usedStealth = false
       });
     }
 
     while(!q.empty()) {
       auto current = q.front(); q.pop();
-      
-      // Pick up treasure if we're in the treasure room and don't have it yet
-      if (current.room == treasure && !current.hasTreasure) {
-        current.hasTreasure = true;
-      }
-      
       const Room& room = rooms[current.room];
-      bool hasStealth = (current.armor && current.armor->stealth) ||
-                        (current.weapon && current.weapon->stealth) ||
-                        (current.duck && current.duck->stealth);
 
-      std::vector<State> toBeAdded;
-      std::vector<State> toBeTestedInCombat;
-      if(room.monster.has_value())
-        toBeTestedInCombat.push_back(current);
-      else
-        toBeAdded.push_back(current);
-      visited.insert(current);
-      if (current.hasTreasure && std::ranges::find(entrances, current.room) != entrances.end() && !room.monster.has_value()) {
-        return current.actions;
+
+      if(room.monster.has_value()) {
+
+        bool hasStealth = (current.armor && current.armor->stealth) ||
+                            (current.weapon && current.weapon->stealth) ||
+                            (current.duck && current.duck->stealth);
+        bool hasFirstAttack = (current.armor && current.armor->first_attack) ||
+                                (current.weapon && current.weapon->first_attack) ||
+                                (current.duck && current.duck->first_attack);
+        Monster heroObj = { .hp = current.stats.hp, .off = current.stats.off, .def = current.stats.def,
+          .stacking_off = current.stats.stacking_off, .stacking_def = current.stats.stacking_def };
+        auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
+        bool survived = (hasFirstAttack && combatResult == A_WINS) || (!hasFirstAttack && combatResult == B_WINS);
+        if(!survived && !hasStealth) {
+          visited.insert(current);
+          continue;
+        }
+        if(!survived)
+          current.usedStealth = true;
       }
-
-
-      // zkusime sbirat itemy
-      for (size_t itemIdx = 0; itemIdx < room.items.size(); itemIdx++) {
-        const Item &item = room.items[itemIdx];
-        // nemuzeme sebrat itemy ve stealth modu, ani poklad pokud je tam monster
-        if(hasStealth && room.monster.has_value()) continue;
-        auto next = current;
-        next.replaceItem(item, itemIdx);
-        if(!visited.contains(next)) {
-          if(room.monster.has_value())
-            toBeTestedInCombat.push_back(next);
-          else
-            toBeAdded.push_back(next);
+      std::vector<State> toBeChecked;
+      toBeChecked.push_back(current);
+      if(!current.usedStealth) {
+        for (auto & item : room.items) {
+          auto next = current;
+          next.replaceItem(item, &item - &room.items[0]);
+          if(!visited.contains(next))
+            toBeChecked.push_back(next);
         }
       }
 
-
-      for(State &s : toBeTestedInCombat) {
-        bool hasStealthCurr = (s.armor && s.armor->stealth) ||
-                              (s.weapon && s.weapon->stealth) ||
-                              (s.duck && s.duck->stealth);
-        bool hasFirstAttackCurr = (s.armor && s.armor->first_attack) ||
-                                  (s.weapon && s.weapon->first_attack) ||
-                                  (s.duck && s.duck->first_attack);
-        // can only stealth if NOT picking up treasure in this room
-        if(hasStealthCurr && !s.hasTreasure)
-          toBeAdded.push_back(s);
-        else {
-          Monster heroObj = { .hp = s.stats.hp, .off = s.stats.off, .def = s.stats.def,
-            .stacking_off = s.stats.stacking_off, .stacking_def = s.stats.stacking_def };
-          auto combatResult = hasFirstAttackCurr ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
-          bool survived = (hasFirstAttackCurr && combatResult == A_WINS) || (!hasFirstAttackCurr && combatResult == B_WINS);
-          if(survived)
-            toBeAdded.push_back(s);
-        }
-      }
-
-
-      for(auto &s : toBeAdded) {
+      for(auto & s : toBeChecked){
         for (auto &neighbour : room.neighbors) {
           auto tba = s;
+          if(tba.room == treasure && !tba.usedStealth && !tba.hasTreasure) {
+            tba.hasTreasure = true;
+          }
+          if(tba.hasTreasure && std::ranges::find(entrances, tba.room) != entrances.end()) {
+            return tba.actions;
+          }
+          tba.usedStealth = false;
           tba.room = neighbour;
           tba.actions.emplace_back(Move{ neighbour });
-          if(!visited.contains(tba))
+          if(!visited.contains(tba)) {
             q.push(tba);
+            visited.insert(tba);
+          }
         }
       }
     }
@@ -282,7 +277,7 @@ void check_solution(
   const std::vector<RoomId>& entrances,
   RoomId treasure,
   size_t expected_rooms,
-  bool print = false
+  bool print = true
 ) {
   // TODO check if hero survives combat
   // TODO check if treasure was collected
