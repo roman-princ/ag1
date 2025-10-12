@@ -236,31 +236,62 @@ namespace student_namespace {
           .stacking_off = current.stats.stacking_off, .stacking_def = current.stats.stacking_def };
         auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
         bool survived = (hasFirstAttack && combatResult == A_WINS) || (!hasFirstAttack && combatResult == B_WINS);
-        if(!survived && !hasStealth) {
-          visited.insert(current);
-          continue;
-        }
         if(!survived) {
+          if(!hasStealth)
+            continue;
           current.usedStealth = true;
         }
       }
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
       if (!current.usedStealth) {
-        auto temp = current;
-        for (auto &item: room.items) {
-          temp.replaceItem(rooms, current.room, &item - &room.items[0]);
-          if(!visited.contains(temp)) {
-            toBeChecked.push_back(temp);
-            visited.insert(temp);
+        size_t n = room.items.size();
+        for (int mask = 1; mask < (1 << n); ++mask) {
+          std::unordered_set<Item::Type> types;
+          bool valid = true;
+          auto next = current;
+          for (size_t i = 0; i < n; ++i) {
+            if (mask & (1 << i)) {
+              const Item &it = room.items[i];
+              if (types.contains(it.type)) {
+                valid = false;
+                break;
+              }
+              types.insert(it.type);
+              next.replaceItem(rooms, current.room, i);
+            }
           }
+          if (valid)
+            toBeChecked.push_back(next);
         }
+      }
+      // EWWWW
+      for (const EquippedItem& eq : current.equipped) {
+        auto dropped = current;
+
+        dropped.actions.emplace_back(Drop{ eq.type });
+        dropped.equipped.erase(std::remove_if(dropped.equipped.begin(), dropped.equipped.end(),
+                     [&](const EquippedItem& e) { return e.type == eq.type; }),
+      dropped.equipped.end());
+
+        HeroStats newStats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0 };
+        for (const EquippedItem& e : dropped.equipped) {
+          newStats.hp += e.hp;
+          newStats.off += e.off;
+          newStats.def += e.def;
+          newStats.stacking_off += e.stacking_off;
+          newStats.stacking_def += e.stacking_def;
+        }
+        if (newStats.hp < 1) newStats.hp = 1;
+        dropped.stats = newStats;
+
+        toBeChecked.push_back(dropped);
       }
 
       for(auto & s : toBeChecked){
         for (auto &neighbour : room.neighbors) {
           auto tba = s;
-          if(tba.room == treasure && !tba.usedStealth && !tba.hasTreasure)
+          if(tba.room == treasure && !tba.usedStealth)
             tba.hasTreasure = true;
           if(tba.hasTreasure && std::ranges::find(entrances, tba.room) != entrances.end())
             return tba.actions;
