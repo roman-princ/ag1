@@ -123,54 +123,49 @@ namespace student_namespace {
         armor == o.armor && weapon == o.weapon && duck == o.duck && stats == o.stats && usedStealth == o.usedStealth;
     }
 
-    void dropItem(Item::Type type) {
-      std::optional<Item>* itemSlot = nullptr;
-
-      if (type == Item::Armor) {
-        itemSlot = &armor;
-      } else if (type == Item::Weapon) {
-        itemSlot = &weapon;
-      } else if (type == Item::RubberDuck) {
-        itemSlot = &duck;
-      }
-
-      if (itemSlot && itemSlot->has_value()) {
-        stats.hp -= (*itemSlot)->hp;
-        stats.off -= (*itemSlot)->off;
-        stats.def -= (*itemSlot)->def;
-        stats.stacking_off -= (*itemSlot)->stacking_off;
-        stats.stacking_def -= (*itemSlot)->stacking_def;
-        *itemSlot = std::nullopt;
-        actions.emplace_back(Drop{ type });
-      }
-    }
-
     void replaceItem(const Item &newItem, ItemId itemIndex) {
-      // Drop existing item of the same type if present
-      if (newItem.type == Item::Armor && armor.has_value()) {
-        dropItem(Item::Armor);
-      } else if (newItem.type == Item::Weapon && weapon.has_value()) {
-        dropItem(Item::Weapon);
-      } else if (newItem.type == Item::RubberDuck && duck.has_value()) {
-        dropItem(Item::RubberDuck);
+
+      std::vector<std::optional<Item>> equipped = {};
+      HeroStats initStats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, };
+      // lambda pro aplikaci itemu
+      auto apply = [&](const std::optional<Item>& i) {
+        if (!i.has_value()) return;
+        initStats.hp += i->hp;
+        initStats.off += i->off;
+        initStats.def += i->def;
+        initStats.stacking_off += i->stacking_off;
+        initStats.stacking_def += i->stacking_def;
+      };
+
+
+      switch (newItem.type) {
+        case Item::Armor:
+          if(armor.has_value())
+            actions.emplace_back(Drop{ Item::Armor });
+          armor = newItem;
+          actions.emplace_back(Pickup{ itemIndex });
+          break;
+        case Item::Weapon:
+          if(weapon.has_value())
+            actions.emplace_back(Drop{ Item::Weapon });
+          weapon = newItem;
+          actions.emplace_back(Pickup{ itemIndex });
+          break;
+        case Item::RubberDuck:
+          if(duck.has_value())
+            actions.emplace_back(Drop{ Item::RubberDuck });
+          actions.emplace_back(Pickup{ itemIndex });
+          duck = newItem;
+          break;
+        default:
+          break;
       }
 
-      // Equip the new item
-      if (newItem.type == Item::Armor) {
-        armor = newItem;
-      } else if (newItem.type == Item::Weapon) {
-        weapon = newItem;
-      } else if (newItem.type == Item::RubberDuck) {
-        duck = newItem;
-      }
-
-      stats.hp += newItem.hp;
-      if(stats.hp < 1) stats.hp = 1;
-      stats.off += newItem.off;
-      stats.def += newItem.def;
-      stats.stacking_off += newItem.stacking_off;
-      stats.stacking_def += newItem.stacking_def;
-      actions.emplace_back(Pickup{itemIndex});
+      apply(armor);
+      apply(weapon);
+      apply(duck);
+      if(initStats.hp < 1) initStats.hp = 1;
+      stats = initStats;
     }
   };
   struct StateHash {
