@@ -115,12 +115,13 @@ namespace student_namespace {
     std::optional<Item> weapon;
     std::optional<Item> duck;
     bool usedStealth = false;
+    HeroStats stats;
+    std::vector<Action> actions;
+
     bool operator==(const State& o) const {
       return room == o.room && hasTreasure == o.hasTreasure &&
         armor == o.armor && weapon == o.weapon && duck == o.duck && stats == o.stats && usedStealth == o.usedStealth;
     }
-    HeroStats stats;
-    std::vector<Action> actions;
 
     void dropItem(Item::Type type) {
       std::optional<Item>* itemSlot = nullptr;
@@ -183,6 +184,7 @@ namespace student_namespace {
       std::size_t h7 = std::hash<int>{}(s.stats.off);
       std::size_t h8 = std::hash<int>{}(s.stats.def);
       std::size_t h9 = std::hash<bool>{}(s.usedStealth);
+
       return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7) ^ (h9 << 8);
     }
   };
@@ -198,9 +200,9 @@ namespace student_namespace {
       q.push(State{
         .room = en,
         .hasTreasure = (en == treasure),
+        .usedStealth = false,
         .stats = HeroStats{ .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, },
-        .actions = { Move{ en } },
-        .usedStealth = false
+        .actions = { Move{ en } }
       });
     }
 
@@ -208,9 +210,7 @@ namespace student_namespace {
       auto current = q.front(); q.pop();
       const Room& room = rooms[current.room];
 
-
       if(room.monster.has_value()) {
-
         bool hasStealth = (current.armor && current.armor->stealth) ||
                             (current.weapon && current.weapon->stealth) ||
                             (current.duck && current.duck->stealth);
