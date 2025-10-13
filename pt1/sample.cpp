@@ -209,18 +209,33 @@ namespace student_namespace {
     std::queue<State> q;
     std::unordered_set<State, StateHash> visited;
 
-    for (auto en : entrances) {
-      q.push(State{
-        .room = en,
-        .hasTreasure = (en == treasure),
-        .usedStealth = false,
-        .stats = HeroStats{ .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, },
-        .actions = { Move{ en } }
-      });
-    }
+    State superStart{
+      .room = SIZE_MAX,
+      .hasTreasure = false,
+      .usedStealth = false,
+      .stats = HeroStats{ .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, },
+      .actions = {}
+    };
+    q.push(superStart);
+    visited.insert(superStart);
 
     while(!q.empty()) {
       auto current = q.front(); q.pop();
+      if (current.room == SIZE_MAX) {
+        for (auto en : entrances) {
+          State start = current;
+          start.room = en;
+          start.hasTreasure = (en == treasure);
+          start.actions.emplace_back(Move{ en });
+
+          if (!visited.contains(start)) {
+            q.push(start);
+            visited.insert(start);
+          }
+        }
+        continue;
+      }
+
       const Room& room = rooms[current.room];
 
       if(room.monster.has_value()) {
@@ -237,35 +252,44 @@ namespace student_namespace {
         auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
         bool survived = (hasFirstAttack && combatResult == A_WINS) || (!hasFirstAttack && combatResult == B_WINS);
         if(!survived) {
-          if(!hasStealth)
+          if(!hasStealth) {
+            visited.insert(current);
             continue;
+          }
           current.usedStealth = true;
         }
       }
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
       if (!current.usedStealth) {
-        size_t n = room.items.size();
-        for (int mask = 1; mask < (1 << n); ++mask) {
-          std::unordered_set<Item::Type> types;
-          bool valid = true;
-          auto next = current;
-          for (size_t i = 0; i < n; ++i) {
-            if (mask & (1 << i)) {
-              const Item &it = room.items[i];
-              if (types.contains(it.type)) {
-                valid = false;
-                break;
-              }
-              types.insert(it.type);
-              next.replaceItem(rooms, current.room, i);
+        // Roztřídit itemy podle typu
+        std::vector<ItemId> armors, weapons, ducks;
+        for (size_t i = 0; i < room.items.size(); ++i) {
+          const Item& item = room.items[i];
+          if (item.type == Item::Armor) armors.push_back(i);
+          else if (item.type == Item::Weapon) weapons.push_back(i);
+          else if (item.type == Item::RubberDuck) ducks.push_back(i);
+        }
+
+        // 3 nested for loops pro každý typ
+        // -1 znamená "žádný item tohoto typu"
+        for (int a = -1; a < (int)armors.size(); ++a) {
+          for (int w = -1; w < (int)weapons.size(); ++w) {
+            for (int d = -1; d < (int)ducks.size(); ++d) {
+              if (a == -1 && w == -1 && d == -1) continue; // skip empty (already added)
+
+              auto next = current;
+              if (a >= 0) next.replaceItem(rooms, current.room, armors[a]);
+              if (w >= 0) next.replaceItem(rooms, current.room, weapons[w]);
+              if (d >= 0) next.replaceItem(rooms, current.room, ducks[d]);
+
+              toBeChecked.push_back(next);
             }
           }
-          if (valid)
-            toBeChecked.push_back(next);
         }
       }
-      // EWWWW
+
+      // Možnost dropnout itemy
       for (const EquippedItem& eq : current.equipped) {
         auto dropped = current;
 
