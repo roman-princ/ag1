@@ -139,12 +139,11 @@ namespace student_namespace {
     bool hasTreasure;
     std::vector<EquippedItem> equipped;
     bool usedStealth = false;
-    HeroStats stats;
     std::vector<Action> actions;
 
     bool operator==(const State& o) const {
       return room == o.room && hasTreasure == o.hasTreasure &&
-        equipped == o.equipped && stats == o.stats && usedStealth == o.usedStealth;
+        equipped == o.equipped && usedStealth == o.usedStealth;
     }
 
     void replaceItem(const std::vector<Room>& rooms, RoomId currentRoom, ItemId itemIndex) {
@@ -164,19 +163,20 @@ namespace student_namespace {
 
       equipped.push_back(EquippedItem::fromItem(rooms[currentRoom].items[itemIndex]));
       actions.emplace_back(Pickup{ itemIndex });
-
-      for (const EquippedItem& eq : equipped) {
-        initStats.hp += eq.hp;
-        initStats.off += eq.off;
-        initStats.def += eq.def;
-        initStats.stacking_off += eq.stacking_off;
-        initStats.stacking_def += eq.stacking_def;
-      }
-
-      if(initStats.hp < 1) initStats.hp = 1;
-      stats = initStats;
     }
   };
+  static Monster calcFighterStats(const std::vector<EquippedItem> &equipped) {
+    Monster stats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, };
+    for (auto &eq : equipped) {
+      stats.hp += eq.hp;
+      stats.off += eq.off;
+      stats.def += eq.def;
+      stats.stacking_off += eq.stacking_off;
+      stats.stacking_def += eq.stacking_def;
+    }
+    if (stats.hp < 1) stats.hp = 1;
+    return stats;
+  }
   struct StateHash {
     std::size_t operator()(const State& s) const {
       std::size_t h1 = std::hash<RoomId>{}(s.room);
@@ -192,12 +192,9 @@ namespace student_namespace {
             ^ (std::hash<bool>{}(eq.first_attack) << 7)
             ^ (std::hash<bool>{}(eq.stealth) << 8);
       }
-      std::size_t h6 = std::hash<int>{}(s.stats.hp);
-      std::size_t h7 = std::hash<int>{}(s.stats.off);
-      std::size_t h8 = std::hash<int>{}(s.stats.def);
-      std::size_t h9 = std::hash<bool>{}(s.usedStealth);
+      std::size_t h4 = std::hash<bool>{}(s.usedStealth);
 
-      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h6 << 5) ^ (h7 << 6) ^ (h8 << 7) ^ (h9 << 8);
+      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
     }
   };
 
@@ -213,7 +210,7 @@ namespace student_namespace {
       .room = SIZE_MAX,
       .hasTreasure = false,
       .usedStealth = false,
-      .stats = HeroStats{ .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, },
+      .equipped = {},
       .actions = {}
     };
     q.push(superStart);
@@ -247,10 +244,9 @@ namespace student_namespace {
           if (eq.first_attack) hasFirstAttack = true;
         }
 
-        Monster heroObj = { .hp = current.stats.hp, .off = current.stats.off, .def = current.stats.def,
-          .stacking_off = current.stats.stacking_off, .stacking_def = current.stats.stacking_def };
+        Monster heroObj = calcFighterStats(current.equipped);
         auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
-        bool survived = (hasFirstAttack && combatResult == A_WINS) || (!hasFirstAttack && combatResult == B_WINS);
+        bool survived = hasFirstAttack ? (combatResult == A_WINS) : (combatResult == B_WINS);
         if(!survived) {
           if(!hasStealth) {
             visited.insert(current);
@@ -262,7 +258,6 @@ namespace student_namespace {
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
       if (!current.usedStealth) {
-        // Roztřídit itemy podle typu
         std::vector<ItemId> armors, weapons, ducks;
         for (size_t i = 0; i < room.items.size(); ++i) {
           const Item& item = room.items[i];
@@ -271,12 +266,11 @@ namespace student_namespace {
           else if (item.type == Item::RubberDuck) ducks.push_back(i);
         }
 
-        // 3 nested for loops pro každý typ
-        // -1 znamená "žádný item tohoto typu"
+
         for (int a = -1; a < (int)armors.size(); ++a) {
           for (int w = -1; w < (int)weapons.size(); ++w) {
             for (int d = -1; d < (int)ducks.size(); ++d) {
-              if (a == -1 && w == -1 && d == -1) continue; // skip empty (already added)
+              if (a == -1 && w == -1 && d == -1) continue;
 
               auto next = current;
               if (a >= 0) next.replaceItem(rooms, current.room, armors[a]);
@@ -297,17 +291,6 @@ namespace student_namespace {
         dropped.equipped.erase(std::remove_if(dropped.equipped.begin(), dropped.equipped.end(),
                      [&](const EquippedItem& e) { return e.type == eq.type; }),
       dropped.equipped.end());
-
-        HeroStats newStats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0 };
-        for (const EquippedItem& e : dropped.equipped) {
-          newStats.hp += e.hp;
-          newStats.off += e.off;
-          newStats.def += e.def;
-          newStats.stacking_off += e.stacking_off;
-          newStats.stacking_def += e.stacking_def;
-        }
-        if (newStats.hp < 1) newStats.hp = 1;
-        dropped.stats = newStats;
 
         toBeChecked.push_back(dropped);
       }
