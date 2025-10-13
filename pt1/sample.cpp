@@ -40,8 +40,8 @@ struct Item {
   int stacking_off = 0, stacking_def = 0;
   bool first_attack = false; // Hero attacks first.
   bool stealth = false; // Hero can sneak past monsters (but cannot loot items while sneaking).
-  
-  friend auto operator <=> (const Item&, const Item&) = default;
+
+  friend auto operator <=>(const Item &, const Item &) = default;
 };
 
 struct Monster {
@@ -58,9 +58,18 @@ struct Room {
   std::vector<Item> items;
 };
 
-struct Move { RoomId room; };
-struct Pickup { ItemId item; };
-struct Drop { Item::Type type; };
+struct Move {
+  RoomId room;
+};
+
+struct Pickup {
+  ItemId item;
+};
+
+struct Drop {
+  Item::Type type;
+};
+
 using Action = std::variant<Move, Pickup, Drop>;
 
 namespace student_namespace {
@@ -108,14 +117,14 @@ namespace student_namespace {
     int stacking_off, stacking_def;
     bool first_attack, stealth;
 
-    bool operator==(const EquippedItem& o) const {
+    bool operator==(const EquippedItem &o) const {
       return type == o.type &&
              hp == o.hp && off == o.off && def == o.def &&
              stacking_off == o.stacking_off && stacking_def == o.stacking_def &&
              first_attack == o.first_attack && stealth == o.stealth;
     }
 
-    static EquippedItem fromItem(const Item& i) {
+    static EquippedItem fromItem(const Item &i) {
       return EquippedItem{
         .type = i.type,
         .hp = i.hp,
@@ -128,51 +137,67 @@ namespace student_namespace {
       };
     }
   };
+
   // -------------------------------------------------------------------------------
   struct State {
     RoomId room;
     bool hasTreasure;
     std::vector<EquippedItem> equipped;
     bool usedStealth = false;
-    std::vector<Action> actions;
 
-    bool operator==(const State& o) const {
+    bool operator==(const State &o) const {
       return room == o.room && hasTreasure == o.hasTreasure &&
-        equipped == o.equipped && usedStealth == o.usedStealth;
+             equipped == o.equipped && usedStealth == o.usedStealth;
+    }
+
+    bool operator<(const State &o) const {
+      if (room != o.room) return room < o.room;
+      if (hasTreasure != o.hasTreasure) return hasTreasure < o.hasTreasure;
+      if (usedStealth != o.usedStealth) return usedStealth < o.usedStealth;
+      return equipped.size() < o.equipped.size();
     }
 
     bool hasStealth() const {
-      for (auto &eq : equipped) {
+      for (auto &eq: equipped) {
         if (eq.stealth) return true;
       }
       return false;
     }
 
     bool hasFirstAttack() const {
-      for (auto &eq : equipped) {
+      for (auto &eq: equipped) {
         if (eq.first_attack) return true;
       }
       return false;
     }
-    void replaceItem(const std::vector<Room>& rooms, RoomId &currentRoom, ItemId &itemIndex) {
-      const Item& newItem = rooms[currentRoom].items[itemIndex];
-      auto it = std::ranges::find_if(equipped, [&](const EquippedItem& eq) {
+
+    void replaceItem(const std::vector<Room> &rooms, RoomId &currentRoom, ItemId &itemIndex,
+                     std::vector<Action> &actions) {
+      const Item &newItem = rooms[currentRoom].items[itemIndex];
+      auto temp = *this;
+      auto it = std::ranges::find_if(equipped, [&](const EquippedItem &eq) {
         return eq.type == newItem.type;
       });
 
       if (it != equipped.end()) {
-        actions.emplace_back(Drop{ newItem.type });
+        actions.emplace_back(Drop{newItem.type});
         equipped.erase(it);
       }
 
-      equipped.push_back(EquippedItem::fromItem(rooms[currentRoom].items[itemIndex]));
-      actions.emplace_back(Pickup{ itemIndex });
+      equipped.emplace_back(EquippedItem::fromItem(rooms[currentRoom].items[itemIndex]));
+      actions.emplace_back(Pickup{itemIndex});
     }
   };
+
+  struct ParentInfo {
+    State parent;
+    std::vector<Action> actions;
+  };
+
   // -------------------------------------------------------------------------------
   static Monster calcFighterStats(const std::vector<EquippedItem> &equipped) {
-    Monster stats = { .hp = 10000, .off = 3, .def = 2, .stacking_off = 0, .stacking_def = 0, };
-    for (auto &eq : equipped) {
+    Monster stats = {.hp = 10000, .off = 3, .def = 2, .stacking_off = 0, .stacking_def = 0,};
+    for (auto &eq: equipped) {
       stats.hp += eq.hp;
       stats.off += eq.off;
       stats.def += eq.def;
@@ -182,13 +207,14 @@ namespace student_namespace {
     if (stats.hp < 1) stats.hp = 1;
     return stats;
   }
+
   // --------------------------------------------------------------------------------
   struct StateHash {
-    std::size_t operator()(const State& s) const {
+    std::size_t operator()(const State &s) const {
       std::size_t h1 = std::hash<RoomId>{}(s.room);
       std::size_t h2 = std::hash<bool>{}(s.hasTreasure);
       std::size_t h3 = 0;
-      for (const auto& eq : s.equipped) {
+      for (const auto &eq: s.equipped) {
         h3 ^= (std::hash<int>{}(eq.off) << 1)
             ^ (std::hash<int>{}(eq.def) << 2)
             ^ (std::hash<int>{}(eq.hp) << 3)
@@ -203,118 +229,136 @@ namespace student_namespace {
       return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
     }
   };
+
+  std::vector<Action> reconstructPath(
+    const std::unordered_map<State, ParentInfo, StateHash> &parents,
+    State &current
+  ) {
+    std::vector<Action> path;
+    while (true) {
+      auto it = parents.find(current);
+      if (it == parents.end()) break;
+      const ParentInfo &pi = it->second;
+      path.insert(path.begin(), pi.actions.begin(), pi.actions.end());
+      if (pi.parent.room == SIZE_MAX) break;
+      current = pi.parent;
+    }
+    return path;
+  }
+
   // -------------------------------------------------------------------------------------------------
   std::vector<Action> find_shortest_path(
-    const std::vector<Room>& rooms,
-    const std::vector<RoomId>& entrances,
+    const std::vector<Room> &rooms,
+    const std::vector<RoomId> &entrances,
     RoomId treasure
   ) {
     std::queue<State> q;
     std::unordered_set<State, StateHash> visited;
-
-    State superStart{
+    std::unordered_map<State, ParentInfo, StateHash> parents;
+    State OUT_STATE = {
       .room = SIZE_MAX,
       .hasTreasure = false,
-      .usedStealth = false,
       .equipped = {},
-      .actions = {}
+      .usedStealth = false,
     };
-    q.push(superStart);
-    superStart.actions.clear();
-    visited.insert(superStart);
+
+    for (auto &en: entrances) {
+      State s = {
+        .room = en,
+        .hasTreasure = false,
+        .equipped = {},
+        .usedStealth = false,
+      };
+      q.push(s);
+      visited.insert(s);
+      parents[s] = {.parent = OUT_STATE, .actions = {Move{en}}};
+    }
 
 
-    while(!q.empty()) {
-      auto current = q.front(); q.pop();
-      if (current.room == SIZE_MAX) {
-        for (auto en : entrances) {
-          State start = current;
-          start.room = en;
-          start.hasTreasure = (en == treasure);
-          start.actions.emplace_back(Move{ en });
+    while (!q.empty()) {
+      auto current = q.front();
+      q.pop();
 
-          if (!visited.contains(start)) {
-            q.push(start);
-            start.actions.clear();
-            visited.insert(start);
-          }
-        }
-        continue;
-      }
+      const Room &room = rooms[current.room];
 
-      const Room& room = rooms[current.room];
-
-      if(room.monster.has_value()) {
+      if (room.monster.has_value()) {
         bool hasStealth = current.hasStealth();
         bool hasFirstAttack = current.hasFirstAttack();
 
 
         Monster heroObj = calcFighterStats(current.equipped);
-        auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
+        auto combatResult = hasFirstAttack
+                              ? simulate_combat(heroObj, room.monster.value())
+                              : simulate_combat(room.monster.value(), heroObj);
         bool survived = hasFirstAttack ? (combatResult == A_WINS) : (combatResult == B_WINS);
-        if(!survived) {
-          if(!hasStealth) {
-            current.actions.clear();
+        if (!survived) {
+          if (!hasStealth) {
             visited.insert(current);
             continue;
           }
           current.usedStealth = true;
         }
       }
-      std::vector<State> toBeChecked;
-      toBeChecked.push_back(current);
+      std::vector<std::pair<State, std::vector<Action> > > toBeChecked;
+      toBeChecked.push_back({current, {}});
 
 
       if (!current.usedStealth) {
         std::vector<ItemId> armors, weapons, ducks;
         for (size_t i = 0; i < room.items.size(); ++i) {
-          const Item& item = room.items[i];
+          const Item &item = room.items[i];
           if (item.type == Item::Armor) armors.push_back(i);
           else if (item.type == Item::Weapon) weapons.push_back(i);
           else if (item.type == Item::RubberDuck) ducks.push_back(i);
         }
 
 
-        for (int a = -1; a < (int)armors.size(); ++a) {
-          for (int w = -1; w < (int)weapons.size(); ++w) {
-            for (int d = -1; d < (int)ducks.size(); ++d) {
+        for (int a = -1; a < (int) armors.size(); ++a) {
+          for (int w = -1; w < (int) weapons.size(); ++w) {
+            for (int d = -1; d < (int) ducks.size(); ++d) {
               if (a == -1 && w == -1 && d == -1) continue;
 
               auto next = current;
-              if (a >= 0) next.replaceItem(rooms, current.room, armors[a]);
-              if (w >= 0) next.replaceItem(rooms, current.room, weapons[w]);
-              if (d >= 0) next.replaceItem(rooms, current.room, ducks[d]);
+              std::vector<Action> newActions;
+              if (a >= 0) next.replaceItem(rooms, current.room, armors[a], newActions);
+              if (w >= 0) next.replaceItem(rooms, current.room, weapons[w], newActions);
+              if (d >= 0) next.replaceItem(rooms, current.room, ducks[d], newActions);
 
-              toBeChecked.push_back(next);
+              toBeChecked.emplace_back(std::make_pair(next, newActions));
             }
           }
         }
       }
 
-      for (const EquippedItem& eq : current.equipped) {
+      for (const EquippedItem &eq: current.equipped) {
         auto dropped = current;
-
-        dropped.actions.emplace_back(Drop{ eq.type });
+        std::vector<Action> dropActions;
+        dropActions.emplace_back(Drop{eq.type});
         dropped.equipped.erase(std::remove_if(dropped.equipped.begin(), dropped.equipped.end(),
-                     [&](const EquippedItem& e) { return e.type == eq.type; }),
-      dropped.equipped.end());
+                                              [&](const EquippedItem &e) { return e.type == eq.type; }),
+                               dropped.equipped.end());
 
-        toBeChecked.push_back(dropped);
+        toBeChecked.emplace_back(std::make_pair(dropped, dropActions));
       }
 
-      for(auto & s : toBeChecked){
-        for (auto &neighbour : room.neighbors) {
+      if (current.hasTreasure && std::ranges::find(entrances, current.room) != entrances.end()) {
+        return reconstructPath(parents, current);
+      }
+
+
+      for (auto &[s, sActions]: toBeChecked
+      ) {
+        for (auto &neighbour: room.neighbors) {
           auto tba = s;
-          if(tba.room == treasure && !tba.usedStealth)
+          auto actions = sActions;
+          if (tba.room == treasure && !tba.usedStealth)
             tba.hasTreasure = true;
-          if(tba.hasTreasure && std::ranges::find(entrances, tba.room) != entrances.end())
-            return tba.actions;
           tba.usedStealth = false;
           tba.room = neighbour;
-          tba.actions.emplace_back(Move{ neighbour });
-          if(!visited.contains(tba)) {
+          actions.emplace_back(Move{neighbour});
+          if (!visited.contains(tba)) {
             q.push(tba);
-            tba.actions.clear();
+            parents[tba] = {.parent = current, .actions = actions};
             visited.insert(tba);
           }
         }
@@ -327,19 +371,20 @@ namespace student_namespace {
 #ifndef __PROGTEST__
 }
 
-bool contains(const auto& vec, const auto& x) {
+bool contains(const auto &vec, const auto &x) {
   return std::ranges::find(vec, x) != vec.end();
 };
 
 #define CHECK(cond, ...) do { \
     if (!(cond)) { fprintf(stderr, __VA_ARGS__); assert(0); } \
   } while (0)
+
 void check_solution(
-  const std::vector<Room>& rooms,
-  const std::vector<RoomId>& entrances,
+  const std::vector<Room> &rooms,
+  const std::vector<RoomId> &entrances,
   RoomId treasure,
   size_t expected_rooms,
-  bool print = false
+  bool print = true
 ) {
   // TODO check if hero survives combat
   // TODO check if treasure was collected
@@ -356,10 +401,10 @@ void check_solution(
 
   try {
     CHECK(contains(entrances, std::get<Move>(solution.front()).room),
-      "Path must start at entrance.\n");
+          "Path must start at entrance.\n");
     CHECK(contains(entrances, std::get<Move>(solution.back()).room),
-      "Path must end at entrance.\n");
-  } catch (const std::bad_variant_access&) {
+          "Path must end at entrance.\n");
+  } catch (const std::bad_variant_access &) {
     CHECK(false, "Path must start and end with Move.\n");
   }
 
@@ -370,21 +415,21 @@ void check_solution(
   if (print) printf("Move(%zu)", cur);
 
   auto drop_items = [&](Item::Type type) {
-    std::erase_if(equip, [&](const Item& i) { return i.type == type; });
+    std::erase_if(equip, [&](const Item &i) { return i.type == type; });
   };
 
   for (size_t i = 1; i < solution.size(); i++) {
     if (auto m = std::get_if<Move>(&solution[i])) {
       CHECK(m->room < rooms.size(), "Next room index out of range.\n");
       CHECK(contains(rooms[cur].neighbors, m->room),
-        "Next room is not a neighbor of the current one.\n");
+            "Next room is not a neighbor of the current one.\n");
       cur = m->room;
       room_count++;
 
       if (print) printf(", Move(%zu)", cur);
     } else if (auto p = std::get_if<Pickup>(&solution[i])) {
       CHECK(p->item < rooms[cur].items.size(), "Picked up item out of range.\n");
-      const Item& item = rooms[cur].items[p->item];
+      const Item &item = rooms[cur].items[p->item];
       drop_items(item.type);
       equip.push_back(item);
 
@@ -393,18 +438,16 @@ void check_solution(
       auto t = std::get<Drop>(solution[i]).type;
       drop_items(t);
 
-      if (print) printf(", Drop(%s)",
-        t == Item::Armor ? "Armor" :
-        t == Item::Weapon ? "Weapon" :
-        t == Item::RubberDuck ? "Duck" :
-        "ERROR");
+      if (print)
+        printf(", Drop(%s)",
+               t == Item::Armor ? "Armor" : t == Item::Weapon ? "Weapon" : t == Item::RubberDuck ? "Duck" : "ERROR");
     }
   }
 
   if (print) printf("\n");
 
-  CHECK(room_count == expected_rooms, 
-    "Expected %zu rooms but got %zu.\n", expected_rooms, room_count);
+  CHECK(room_count == expected_rooms,
+        "Expected %zu rooms but got %zu.\n", expected_rooms, room_count);
 }
 #undef CHECK
 
@@ -434,32 +477,32 @@ void combat_examples() {
   rooms[0].neighbors.push_back(1);
   rooms[1].neighbors.push_back(0);
 
-  check_solution(rooms, { 0 }, 1, 3);
+  check_solution(rooms, {0}, 1, 3);
 
-  rooms[1].monster = Monster{ .hp = 9'999, .off = 3, .def = 2 };
-  check_solution(rooms, { 0 }, 1, 3);
-  
+  rooms[1].monster = Monster{.hp = 9'999, .off = 3, .def = 2};
+  check_solution(rooms, {0}, 1, 3);
+
   rooms[1].monster->hp += 1;
-  check_solution(rooms, { 0 }, 1, 0);
+  check_solution(rooms, {0}, 1, 0);
 
-  rooms[1].monster = Monster{ .hp = 100'000, .off = 10 };
-  check_solution(rooms, { 0 }, 1, 0);
+  rooms[1].monster = Monster{.hp = 100'000, .off = 10};
+  check_solution(rooms, {0}, 1, 0);
 
-  rooms[0].items = { defensive_duck };
-  check_solution(rooms, { 0 }, 1, 3);
+  rooms[0].items = {defensive_duck};
+  check_solution(rooms, {0}, 1, 3);
 
-  rooms[0].items = { invincible_duck };
-  check_solution(rooms, { 0 }, 1, 3);
+  rooms[0].items = {invincible_duck};
+  check_solution(rooms, {0}, 1, 3);
 
   rooms[0].items = {};
-  rooms[1].monster = Monster{ .hp=1, .off=3, .def=0, .stacking_def=100 };
-  check_solution(rooms, { 0 }, 1, 0);
+  rooms[1].monster = Monster{.hp = 1, .off = 3, .def = 0, .stacking_def = 100};
+  check_solution(rooms, {0}, 1, 0);
 
   rooms[0].items.push_back(offensive_duck);
-  check_solution(rooms, { 0 }, 1, 0);
+  check_solution(rooms, {0}, 1, 0);
 
   rooms[0].items.push_back(fast_duck);
-  check_solution(rooms, { 0 }, 1, 3);
+  check_solution(rooms, {0}, 1, 3);
 }
 
 void stealth_examples() {
@@ -473,7 +516,7 @@ void stealth_examples() {
     .off = 10,
   };
 
-  const Monster m = { .hp = 10'000, .off=10, .def=2 };
+  const Monster m = {.hp = 10'000, .off = 10, .def = 2};
 
   std::vector<Room> rooms(4);
 
@@ -482,21 +525,21 @@ void stealth_examples() {
     rooms[i - 1].neighbors.push_back(i);
   }
 
-  rooms[0].items = { stealth_duck };
+  rooms[0].items = {stealth_duck};
   rooms[2].monster = m;
 
-  check_solution(rooms, { 0 }, 2, 0); // Cannot stealth steal treasure
+  check_solution(rooms, {0}, 2, 0); // Cannot stealth steal treasure
 
-  rooms[3].items = { sword };
+  rooms[3].items = {sword};
   // Stealth to 3, grab sword & kill monster
-  check_solution(rooms, { 0 }, 2, 7);
+  check_solution(rooms, {0}, 2, 7);
 
   rooms[3].items = {};
-  rooms[1].items = { sword };
-  check_solution(rooms, { 0 }, 2, 5);
+  rooms[1].items = {sword};
+  check_solution(rooms, {0}, 2, 5);
 
   rooms[1].monster = m;
-  check_solution(rooms, { 0 }, 2, 0); // Cannot pickup while stealthing
+  check_solution(rooms, {0}, 2, 0); // Cannot pickup while stealthing
 }
 
 void example_tests() {
@@ -531,12 +574,16 @@ void example_tests() {
     durable
   };
 
-  rooms[no_monster] = { {}, {}, { heavy_armor } };
-  rooms[weak] = { {}, Monster{ .hp = 1000, .off = 10 }, { debugging_duck, sword } };
-  rooms[strong] = { {}, Monster{ .hp = 10, .off = 10'000, .def = 1'000'000 },
-    { berserker_sword } };
-  rooms[durable] =  { {}, Monster{ .hp = 100'000, .off = 10, .stacking_def = 1 },
-    { berserker_sword } };
+  rooms[no_monster] = {{}, {}, {heavy_armor}};
+  rooms[weak] = {{}, Monster{.hp = 1000, .off = 10}, {debugging_duck, sword}};
+  rooms[strong] = {
+    {}, Monster{.hp = 10, .off = 10'000, .def = 1'000'000},
+    {berserker_sword}
+  };
+  rooms[durable] = {
+    {}, Monster{.hp = 100'000, .off = 10, .stacking_def = 1},
+    {berserker_sword}
+  };
 
   auto link = [&](RoomId a, RoomId b) {
     rooms[a].neighbors.push_back(b);
@@ -553,13 +600,13 @@ void example_tests() {
   link(2, durable);
   link(durable, 6);
 
-  check_solution(rooms, { 0 }, 0, 1); // Treasure at entrance
-  check_solution(rooms, { 9 }, 0, 0); // No path to treasure
-  check_solution(rooms, { 8 }, 0, 0); // Blocked by monster
-  check_solution(rooms, { durable }, durable, 0); // Killed on spot
-  check_solution(rooms, { 7 }, 0, 5); // Kills weak monster
-  check_solution(rooms, { 6, 7 }, 2, 7); // Sneaks around durable
-  check_solution(rooms, { 6, 7 }, durable, 9); // Kills durable
+  check_solution(rooms, {0}, 0, 1); // Treasure at entrance
+  check_solution(rooms, {9}, 0, 0); // No path to treasure
+  check_solution(rooms, {8}, 0, 0); // Blocked by monster
+  check_solution(rooms, {durable}, durable, 0); // Killed on spot
+  check_solution(rooms, {7}, 0, 5); // Kills weak monster
+  check_solution(rooms, {6, 7}, 2, 7); // Sneaks around durable
+  check_solution(rooms, {6, 7}, durable, 9); // Kills durable
 }
 
 void example_tests2() {
@@ -605,7 +652,7 @@ void example_tests2() {
   enum : RoomId {
     impossible = CYCLE_LEN,
     r1, r2, r3, r4, r4a, r4b, ROOM_COUNT
-  }; 
+  };
   std::vector<Room> rooms(ROOM_COUNT);
 
   auto link = [&](RoomId a, RoomId b) {
@@ -614,30 +661,30 @@ void example_tests2() {
   };
 
   for (int i = 1; i < CYCLE_LEN; i++) link(i - 1, i);
-  rooms[CYCLE_LEN-1].neighbors.push_back(0);
+  rooms[CYCLE_LEN - 1].neighbors.push_back(0);
 
-  rooms[impossible] = { {}, {{ .hp = 1'000'000, .off = 1'000'000 }}, { duck_of_power } };
+  rooms[impossible] = {{}, {{.hp = 1'000'000, .off = 1'000'000}}, {duck_of_power}};
   link(impossible, 0);
 
-  rooms[r1] = { {}, {{ .hp = 9'999, .off = 3, .def = 2 }}, { defensive_duck, dull_sword } };
+  rooms[r1] = {{}, {{.hp = 9'999, .off = 3, .def = 2}}, {defensive_duck, dull_sword}};
   link(r1, 1);
 
-  rooms[r2] = { {}, {{ .hp = 100'000, .off = 10 }}, { sword, leather_pants } };
+  rooms[r2] = {{}, {{.hp = 100'000, .off = 10}}, {sword, leather_pants}};
   link(r2, CYCLE_LEN - 3);
 
-  rooms[r3] = { {}, {{ .hp = 100'000, .off = 10, .def = 1 }}, { stealth_duck, slow_sword } };
+  rooms[r3] = {{}, {{.hp = 100'000, .off = 10, .def = 1}}, {stealth_duck, slow_sword}};
   link(r3, 2);
 
-  rooms[r4] = { { r4a }, {{ .hp = 10'000, .off = 10'000 }}, {} };
-  rooms[r4a] = { { r4b } };
-  rooms[r4b] = { {}, {{ .hp = 10'000, .off = 1 }}, {} };
+  rooms[r4] = {{r4a}, {{.hp = 10'000, .off = 10'000}}, {}};
+  rooms[r4a] = {{r4b}};
+  rooms[r4b] = {{}, {{.hp = 10'000, .off = 1}}, {}};
   link(r4, CYCLE_LEN - 4);
   link(r4b, CYCLE_LEN - 4);
 
   // r1 (loots duck) -> r2 (loots pants & sword) -> r3
-  check_solution(rooms, { 0 }, r3, CYCLE_LEN + 11);
+  check_solution(rooms, {0}, r3, CYCLE_LEN + 11);
   // r1 (loots duck) -> r2 (loots pants & sword) -> r3 (loots stealth duck) -> r4a
-  check_solution(rooms, { 0 }, r4a, 2*CYCLE_LEN + 11);
+  check_solution(rooms, {0}, r4a, 2 * CYCLE_LEN + 11);
 }
 
 void example_tests3() {
@@ -681,12 +728,12 @@ void example_tests3() {
   link(short_path + 1, short_path + 2);
   link(short_path + 2, treasure);
 
-  rooms[short_path + 0].items = { sword };
-  rooms[short_path + 1].monster = Monster{ .hp=10'000, .off=5, .def=3 };
-  rooms[short_path + 1].items = { stacking_duck, heavy_armor };
-  rooms[short_path + 2].monster = Monster{ .hp=100'000, .off=5, .def=3 };
+  rooms[short_path + 0].items = {sword};
+  rooms[short_path + 1].monster = Monster{.hp = 10'000, .off = 5, .def = 3};
+  rooms[short_path + 1].items = {stacking_duck, heavy_armor};
+  rooms[short_path + 2].monster = Monster{.hp = 100'000, .off = 5, .def = 3};
 
-  check_solution(rooms, { start }, treasure, 6);
+  check_solution(rooms, {start}, treasure, 6);
 }
 
 void example_tests4() {
@@ -720,13 +767,13 @@ void example_tests4() {
   link(short_path + 1, short_path + 2);
   link(short_path + 2, treasure);
 
-  Monster needs_sword = Monster{ .hp=10'000, .off=6, .def=3 };
-  Monster no_sword = Monster{ .hp=100'000, .off=3 };
+  Monster needs_sword = Monster{.hp = 10'000, .off = 6, .def = 3};
+  Monster no_sword = Monster{.hp = 100'000, .off = 3};
   rooms[short_path + 0].monster = needs_sword;
   rooms[short_path + 1].monster = no_sword;
   rooms[short_path + 0].monster = needs_sword;
 
-  check_solution(rooms, { start }, treasure, 7);
+  check_solution(rooms, {start}, treasure, 7);
 }
 
 void example_tests5() {
@@ -744,14 +791,15 @@ void example_tests5() {
   };
 
   for (int i = 1; i < LEN; i++) {
-    rooms[i].items = { sword, sword, sword };
+    rooms[i].items = {sword, sword, sword};
     link(i - 1, i);
   }
 
-  rooms[LEN - 1].monster = Monster{ .hp = 1'000'000, .off = 1'000'000 };
+  rooms[LEN - 1].monster = Monster{.hp = 1'000'000, .off = 1'000'000};
 
-  check_solution(rooms, { 0 }, LEN - 1, 0);
+  check_solution(rooms, {0}, LEN - 1, 0);
 }
+
 void example_tests6() {
   const Item defensive_duck = {
     .name = "Defensive Duck", .type = Item::RubberDuck,
@@ -766,26 +814,26 @@ void example_tests6() {
     rooms[b].neighbors.push_back(a);
   };
 
-  rooms[0].items = { defensive_duck };
+  rooms[0].items = {defensive_duck};
 
   assert(LEN % 2 == 1);
   for (int i = 1; i + 1 < LEN; i += 2) {
     link(i - 1, i);
     link(i, i + 1);
 
-    rooms[i+1].items = { defensive_duck };
+    rooms[i + 1].items = {defensive_duck};
 
-    rooms[i].monster = Monster{ .hp = 10'000'000, .off = 50, .def = -120 };
-    rooms[i+1].monster = Monster{ .hp = 10'000, .off = 1, .def = 1 };
+    rooms[i].monster = Monster{.hp = 10'000'000, .off = 50, .def = -120};
+    rooms[i + 1].monster = Monster{.hp = 10'000, .off = 1, .def = 1};
   }
 
   for (int i = 1; i < LEN + 10; i++)
     link(LEN + i - 1, LEN + i);
 
   link(0, LEN);
-  link(LEN - 1, 2*LEN + 10 - 1);
+  link(LEN - 1, 2 * LEN + 10 - 1);
 
-  check_solution(rooms, { 0 }, LEN - 1, 2*LEN - 1);
+  check_solution(rooms, {0}, LEN - 1, 2 * LEN - 1);
 }
 
 int main() {
