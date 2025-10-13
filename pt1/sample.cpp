@@ -100,14 +100,8 @@ namespace student_namespace {
     if (!b_turns) return A_WINS;
     return *a_turns <= *b_turns ? A_WINS : B_WINS;
   }
-  struct HeroStats {
-    int off, def, hp, stacking_off, stacking_def;
-    bool operator==(const HeroStats &o) const
-    {
-      return off == o.off && def == o.def && hp == o.hp && stacking_off == o.stacking_off &&
-        stacking_def == o.stacking_def;
-    }
-  };
+
+  // -------------------------------------------------------------------------------
   struct EquippedItem {
     Item::Type type;
     int hp, off, def;
@@ -134,6 +128,7 @@ namespace student_namespace {
       };
     }
   };
+  // -------------------------------------------------------------------------------
   struct State {
     RoomId room;
     bool hasTreasure;
@@ -146,12 +141,21 @@ namespace student_namespace {
         equipped == o.equipped && usedStealth == o.usedStealth;
     }
 
-    void replaceItem(const std::vector<Room>& rooms, RoomId currentRoom, ItemId itemIndex) {
+    bool hasStealth() const {
+      for (auto &eq : equipped) {
+        if (eq.stealth) return true;
+      }
+      return false;
+    }
+
+    bool hasFirstAttack() const {
+      for (auto &eq : equipped) {
+        if (eq.first_attack) return true;
+      }
+      return false;
+    }
+    void replaceItem(const std::vector<Room>& rooms, RoomId &currentRoom, ItemId &itemIndex) {
       const Item& newItem = rooms[currentRoom].items[itemIndex];
-
-      HeroStats initStats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, };
-
-
       auto it = std::ranges::find_if(equipped, [&](const EquippedItem& eq) {
         return eq.type == newItem.type;
       });
@@ -165,8 +169,9 @@ namespace student_namespace {
       actions.emplace_back(Pickup{ itemIndex });
     }
   };
+  // -------------------------------------------------------------------------------
   static Monster calcFighterStats(const std::vector<EquippedItem> &equipped) {
-    Monster stats = { .off = 3, .def = 2, .hp = 10000, .stacking_off = 0, .stacking_def = 0, };
+    Monster stats = { .hp = 10000, .off = 3, .def = 2, .stacking_off = 0, .stacking_def = 0, };
     for (auto &eq : equipped) {
       stats.hp += eq.hp;
       stats.off += eq.off;
@@ -177,6 +182,7 @@ namespace student_namespace {
     if (stats.hp < 1) stats.hp = 1;
     return stats;
   }
+  // --------------------------------------------------------------------------------
   struct StateHash {
     std::size_t operator()(const State& s) const {
       std::size_t h1 = std::hash<RoomId>{}(s.room);
@@ -197,7 +203,7 @@ namespace student_namespace {
       return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
     }
   };
-
+  // -------------------------------------------------------------------------------------------------
   std::vector<Action> find_shortest_path(
     const std::vector<Room>& rooms,
     const std::vector<RoomId>& entrances,
@@ -214,7 +220,9 @@ namespace student_namespace {
       .actions = {}
     };
     q.push(superStart);
+    superStart.actions.clear();
     visited.insert(superStart);
+
 
     while(!q.empty()) {
       auto current = q.front(); q.pop();
@@ -227,6 +235,7 @@ namespace student_namespace {
 
           if (!visited.contains(start)) {
             q.push(start);
+            start.actions.clear();
             visited.insert(start);
           }
         }
@@ -236,19 +245,16 @@ namespace student_namespace {
       const Room& room = rooms[current.room];
 
       if(room.monster.has_value()) {
-        bool hasStealth = false;
-        bool hasFirstAttack = false;
+        bool hasStealth = current.hasStealth();
+        bool hasFirstAttack = current.hasFirstAttack();
 
-        for (const EquippedItem& eq : current.equipped) {
-          if (eq.stealth) hasStealth = true;
-          if (eq.first_attack) hasFirstAttack = true;
-        }
 
         Monster heroObj = calcFighterStats(current.equipped);
         auto combatResult = hasFirstAttack ? simulate_combat(heroObj, room.monster.value()) : simulate_combat(room.monster.value(), heroObj);
         bool survived = hasFirstAttack ? (combatResult == A_WINS) : (combatResult == B_WINS);
         if(!survived) {
           if(!hasStealth) {
+            current.actions.clear();
             visited.insert(current);
             continue;
           }
@@ -257,6 +263,8 @@ namespace student_namespace {
       }
       std::vector<State> toBeChecked;
       toBeChecked.push_back(current);
+
+
       if (!current.usedStealth) {
         std::vector<ItemId> armors, weapons, ducks;
         for (size_t i = 0; i < room.items.size(); ++i) {
@@ -283,7 +291,6 @@ namespace student_namespace {
         }
       }
 
-      // Možnost dropnout itemy
       for (const EquippedItem& eq : current.equipped) {
         auto dropped = current;
 
@@ -307,6 +314,7 @@ namespace student_namespace {
           tba.actions.emplace_back(Move{ neighbour });
           if(!visited.contains(tba)) {
             q.push(tba);
+            tba.actions.clear();
             visited.insert(tba);
           }
         }
@@ -744,7 +752,41 @@ void example_tests5() {
 
   check_solution(rooms, { 0 }, LEN - 1, 0);
 }
+void example_tests6() {
+  const Item defensive_duck = {
+    .name = "Defensive Duck", .type = Item::RubberDuck,
+    .off = -100, .def = 100,
+  };
 
+  constexpr int LEN = 31;
+  std::vector<Room> rooms(LEN + LEN + 10);
+
+  auto link = [&](RoomId a, RoomId b) {
+    rooms[a].neighbors.push_back(b);
+    rooms[b].neighbors.push_back(a);
+  };
+
+  rooms[0].items = { defensive_duck };
+
+  assert(LEN % 2 == 1);
+  for (int i = 1; i + 1 < LEN; i += 2) {
+    link(i - 1, i);
+    link(i, i + 1);
+
+    rooms[i+1].items = { defensive_duck };
+
+    rooms[i].monster = Monster{ .hp = 10'000'000, .off = 50, .def = -120 };
+    rooms[i+1].monster = Monster{ .hp = 10'000, .off = 1, .def = 1 };
+  }
+
+  for (int i = 1; i < LEN + 10; i++)
+    link(LEN + i - 1, LEN + i);
+
+  link(0, LEN);
+  link(LEN - 1, 2*LEN + 10 - 1);
+
+  check_solution(rooms, { 0 }, LEN - 1, 2*LEN - 1);
+}
 
 int main() {
   combat_examples();
