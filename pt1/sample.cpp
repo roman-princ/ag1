@@ -187,11 +187,30 @@ namespace student_namespace {
       equipped.emplace_back(EquippedItem::fromItem(rooms[currentRoom].items[itemIndex]));
       actions.emplace_back(Pickup{itemIndex});
     }
+
+    void equipItem(const Item &item) {
+      auto itemStruct = EquippedItem::fromItem(item);
+      auto it = std::ranges::find_if(equipped, [&](const EquippedItem &eq) {
+        return eq.type == itemStruct.type;
+      });
+      if (it == equipped.end()) {
+        equipped.emplace_back(itemStruct);
+      }
+    }
+
+    void dropItem(Item::Type type) {
+      auto it = std::ranges::find_if(equipped, [&](const EquippedItem &eq) {
+        return eq.type == type;
+      });
+      if (it != equipped.end()) {
+        equipped.erase(it);
+      }
+    }
   };
 
   struct ParentInfo {
     State parent;
-    std::vector<Action> actions;
+    Action action;
   };
 
   // -------------------------------------------------------------------------------
@@ -239,20 +258,41 @@ namespace student_namespace {
       auto it = parents.find(current);
       if (it == parents.end()) break;
       const ParentInfo &pi = it->second;
-      path.insert(path.begin(), pi.actions.begin(), pi.actions.end());
-      if (pi.parent.room == SIZE_MAX) break;
+      if (pi.parent.room == SIZE_MAX) break; // Reached the initial state
+      path.push_back(pi.action);
       current = pi.parent;
     }
+    std::reverse(path.begin(), path.end());
     return path;
   }
 
   // -------------------------------------------------------------------------------------------------
+  void print_path(const std::vector<Action> &path) {
+    std::cout << "Path (" << path.size() << " actions): ";
+    for (size_t i = 0; i < path.size(); ++i) {
+      if (i > 0) std::cout << " -> ";
+
+      if (auto m = std::get_if<Move>(&path[i])) {
+        std::cout << "Move(" << m->room << ")";
+      } else if (auto p = std::get_if<Pickup>(&path[i])) {
+        std::cout << "Pickup(" << p->item << ")";
+      } else if (auto d = std::get_if<Drop>(&path[i])) {
+        std::cout << "Drop(";
+        if (d->type == Item::Weapon) std::cout << "Weapon";
+        else if (d->type == Item::Armor) std::cout << "Armor";
+        else if (d->type == Item::RubberDuck) std::cout << "Duck";
+        std::cout << ")";
+      }
+    }
+    std::cout << std::endl;
+  }
+
   std::vector<Action> find_shortest_path(
     const std::vector<Room> &rooms,
     const std::vector<RoomId> &entrances,
     RoomId treasure
   ) {
-    std::queue<State> q;
+    std::deque<State> q;
     std::unordered_set<State, StateHash> visited;
     std::unordered_map<State, ParentInfo, StateHash> parents;
     State OUT_STATE = {
@@ -269,15 +309,15 @@ namespace student_namespace {
         .equipped = {},
         .usedStealth = false,
       };
-      q.push(s);
+      q.push_back(s);
       visited.insert(s);
-      parents[s] = {.parent = OUT_STATE, .actions = {Move{en}}};
+      parents[s] = {.parent = OUT_STATE, {Move{en}}};
     }
 
 
     while (!q.empty()) {
       auto current = q.front();
-      q.pop();
+      q.pop_front();
 
       const Room &room = rooms[current.room];
 
@@ -299,68 +339,57 @@ namespace student_namespace {
           current.usedStealth = true;
         }
       }
-      std::vector<std::pair<State, std::vector<Action> > > toBeChecked;
-      toBeChecked.push_back({current, {}});
 
 
-      if (!current.usedStealth) {
-        std::vector<ItemId> armors, weapons, ducks;
-        for (size_t i = 0; i < room.items.size(); ++i) {
-          const Item &item = room.items[i];
-          if (item.type == Item::Armor) armors.push_back(i);
-          else if (item.type == Item::Weapon) weapons.push_back(i);
-          else if (item.type == Item::RubberDuck) ducks.push_back(i);
-        }
+      if (current.room == treasure && !current.usedStealth)
+        current.hasTreasure = true;
 
-
-        for (int a = -1; a < (int) armors.size(); ++a) {
-          for (int w = -1; w < (int) weapons.size(); ++w) {
-            for (int d = -1; d < (int) ducks.size(); ++d) {
-              if (a == -1 && w == -1 && d == -1) continue;
-
-              auto next = current;
-              std::vector<Action> newActions;
-              if (a >= 0) next.replaceItem(rooms, current.room, armors[a], newActions);
-              if (w >= 0) next.replaceItem(rooms, current.room, weapons[w], newActions);
-              if (d >= 0) next.replaceItem(rooms, current.room, ducks[d], newActions);
-
-              toBeChecked.emplace_back(std::make_pair(next, newActions));
+      for (ItemId itemIndex = 0; itemIndex < room.items.size(); itemIndex++) {
+        const Item &item = room.items[itemIndex];
+        auto next = current;
+        auto it = std::ranges::find_if(next.equipped, [&](const EquippedItem &eq) {
+          return eq.type == item.type;
+        });
+        bool haveThisType = it != next.equipped.end();
+        if (!haveThisType && !current.usedStealth) {
+          next.equipItem(item);
+          if (!visited.contains(next)) {
+            q.push_front(next);
+            parents[next] = {.parent = current, .action = Pickup{itemIndex}};
+            visited.insert(next);
+          }
+        } else if (haveThisType) {
+          auto temp = next;
+          temp.dropItem(room.items[itemIndex].type);
+          if (!visited.contains(temp)) {
+            q.push_front(temp);
+            parents[temp] = {.parent = current, .action = Drop{item.type}};
+            if (!current.usedStealth) {
+              auto temp2 = temp;
+              temp2.equipItem(room.items[itemIndex]);
+              if (!visited.contains(temp2)) {
+                q.push_front(temp2);
+                parents[temp2] = {.parent = temp, .action = Pickup{itemIndex}};
+              }
             }
           }
         }
       }
 
-      for (const EquippedItem &eq: current.equipped) {
-        auto dropped = current;
-        std::vector<Action> dropActions;
-        dropActions.emplace_back(Drop{eq.type});
-        dropped.equipped.erase(std::remove_if(dropped.equipped.begin(), dropped.equipped.end(),
-                                              [&](const EquippedItem &e) { return e.type == eq.type; }),
-                               dropped.equipped.end());
-
-        toBeChecked.emplace_back(std::make_pair(dropped, dropActions));
-      }
-
       if (current.hasTreasure && std::ranges::find(entrances, current.room) != entrances.end()) {
-        return reconstructPath(parents, current);
+        auto path = reconstructPath(parents, current);
+        print_path(path);
+        return path;
       }
 
-
-      for (auto &[s, sActions]: toBeChecked
-      ) {
-        for (auto &neighbour: room.neighbors) {
-          auto tba = s;
-          auto actions = sActions;
-          if (tba.room == treasure && !tba.usedStealth)
-            tba.hasTreasure = true;
-          tba.usedStealth = false;
-          tba.room = neighbour;
-          actions.emplace_back(Move{neighbour});
-          if (!visited.contains(tba)) {
-            q.push(tba);
-            parents[tba] = {.parent = current, .actions = actions};
-            visited.insert(tba);
-          }
+      for (auto &neighbour: room.neighbors) {
+        auto tba = current;
+        tba.room = neighbour;
+        tba.usedStealth = false;
+        if (!visited.contains(tba)) {
+          q.push_back(tba);
+          parents[tba] = {.parent = current, .action = Move{neighbour}};
+          visited.insert(tba);
         }
       }
     }
@@ -384,7 +413,7 @@ void check_solution(
   const std::vector<RoomId> &entrances,
   RoomId treasure,
   size_t expected_rooms,
-  bool print = true
+  bool print = false
 ) {
   // TODO check if hero survives combat
   // TODO check if treasure was collected
