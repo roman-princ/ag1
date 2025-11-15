@@ -49,12 +49,25 @@ struct HobbitArmy {
   static constexpr bool CHECK_NEGATIVE_HP = false;
 
 private:
+  struct PendingChanges {
+    int hp_diff = 0;
+    int off_diff = 0;
+    int def_diff = 0;
+  };
+
   struct Node {
-    Hobbit hobbit;
+    mutable Hobbit hobbit;
     Node *left = nullptr, *right = nullptr;
     int height = 1;
-
-    Node(const Hobbit &hobbit) : hobbit(hobbit) {}
+    mutable PendingChanges pendingChanges;
+    std::string minKey, maxKey;
+    void resetPendingChange() {
+      pendingChanges = PendingChanges();
+    }
+    Node(const Hobbit &hobbit) : hobbit(hobbit) {
+      minKey = hobbit.name;
+      maxKey = hobbit.name;
+    }
     const std::string& getName() const {return hobbit.name; }
   };
 
@@ -95,7 +108,9 @@ public:
     int def_diff
   ) {
     if (first > last) return true;
-    enchant_impl(root, first, last, hp_diff, off_diff, def_diff);
+
+    PendingChanges change = {hp_diff, off_diff, def_diff};
+    enchant_impl(root, first, last, change);
     return true;
   }
 
@@ -106,9 +121,54 @@ public:
   private:
   static void for_each_impl(Node *node, auto& fun) {
     if (!node) return;
+    pushDown(node);
     for_each_impl(node->left, fun);
     fun(node->hobbit);
     for_each_impl(node->right, fun);
+  }
+
+  static void combine(PendingChanges &target, const PendingChanges &source) {
+    target.def_diff += source.def_diff;
+    target.off_diff += source.off_diff;
+    target.hp_diff += source.hp_diff;
+  }
+
+  static void apply(Node *node, PendingChanges &changes) {
+    node->hobbit.hp += changes.hp_diff;
+    node->hobbit.off += changes.off_diff;
+    node->hobbit.def += changes.def_diff;
+  }
+
+
+  static void pushDown(Node *node) {
+    if (!node || !hasChanges(node->pendingChanges)) {
+      return;
+    }
+
+    apply(node, node->pendingChanges);
+
+    if (node->left)
+      combine(node->left->pendingChanges, node->pendingChanges);
+    if (node->right)
+      combine(node->right->pendingChanges, node->pendingChanges);
+
+    node->resetPendingChange();
+  }
+
+  void updateMinMax(Node *n) {
+    if (!n) return;
+
+    n->minKey = n->getName();
+    n->maxKey = n->getName();
+
+    if (n->left)
+      n->minKey = std::min(n->minKey, n->left->minKey);
+    if (n->right)
+      n->maxKey = std::max(n->maxKey, n->right->maxKey);
+  }
+
+  static bool hasChanges(const PendingChanges &changes) {
+    return changes.hp_diff != 0 || changes.off_diff != 0 || changes.def_diff != 0;
   }
 
   void deleteTree(Node *node) {
@@ -128,27 +188,37 @@ public:
   }
 
   Node* rRotate(Node* y) {
+    pushDown(y);
+    pushDown(y->left);
     Node* x = y->left;
     Node *t2 = x->right;
     x->right = y;
     y-> left = t2;
     updateHeight(y);
+    updateMinMax(y);
     updateHeight(x);
+    updateMinMax(x);
     return x;
   }
 
   Node* lRotate(Node* x) {
+    pushDown(x);
+    pushDown(x->right);
     Node* y = x->right;
     Node *t2 = y->left;
     y->left = x;
     x->right = t2;
     updateHeight(x);
+    updateMinMax(x);
     updateHeight(y);
+    updateMinMax(y);
     return y;
   }
 
   Node* rebalance(Node *n) {
     updateHeight(n);
+    updateMinMax(n);
+
     int balance = getBalance(n);
     if (balance > 1) {
       if (getBalance(n->left) < 0) {
@@ -166,6 +236,8 @@ public:
   }
 
   Node* findMin(Node* n) {
+    if (!n) return nullptr;
+    pushDown(n);
     if (n->left == nullptr)
       return n;
     return findMin(n->left);
@@ -176,6 +248,7 @@ public:
       success = true;
       return new Node(hobbit);
     }
+    pushDown(node);
     if (hobbit.name < node->getName()) {
       node->left = add_impl(node->left, hobbit, success);
     } else if (hobbit.name > node->getName()) {
@@ -190,6 +263,7 @@ public:
 
   Node* erase_impl(Node* node, const std::string& name, std::optional<Hobbit>& erased) {
     if (!node) return nullptr;
+    pushDown(node);
     if (name < node->getName()) {
       node->left = erase_impl(node->left, name, erased);
     }
@@ -216,8 +290,9 @@ public:
     return rebalance(node);
   }
 
-  const Node* find(const Node *node, const std::string &name) const {
+  const Node* find(Node *node, const std::string &name) const {
     if (!node) return nullptr;
+    pushDown(node);
     if (name < node->getName())
       return find(node->left, name);
     if (name > node->getName())
@@ -225,20 +300,24 @@ public:
     return node;
   }
 
-  void enchant_impl(Node* node, const std::string& first, const std::string& last, int hp, int off, int def) {
+  void enchant_impl(Node* node, const std::string& first, const std::string& last, const PendingChanges &changes) {
     if (!node) return;
+    pushDown(node);
+    if (node->maxKey < first || node->minKey > last)
+      return;
+
+    if (node->minKey >= first && node->maxKey <= last) {
+      combine(node->pendingChanges, changes);
+      return;
+    }
     const std::string& name = node->getName();
     if (name >= first && name <= last) {
-      node->hobbit.hp += hp;
-      node->hobbit.off += off;
-      node->hobbit.def += def;
+      node->hobbit.hp += changes.hp_diff;
+      node->hobbit.off += changes.off_diff;
+      node->hobbit.def += changes.def_diff;
     }
-    if (name > first) {
-      enchant_impl(node->left, first, last, hp, off, def);
-    }
-    if (name < last) {
-      enchant_impl(node->right, first, last, hp, off, def);
-    }
+    enchant_impl(node->left, first, last, changes);
+    enchant_impl(node->right, first, last, changes);
   }
 };
 
